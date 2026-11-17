@@ -303,7 +303,8 @@ public class AuthActivity extends AppCompatActivity {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             builder.setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG);
         } else {
-            builder.setUserAuthenticationValidityDurationSeconds(1);
+            // CryptoObject requires authentication for every use on Android versions before API 30.
+            builder.setUserAuthenticationValidityDurationSeconds(-1);
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -350,6 +351,9 @@ public class AuthActivity extends AppCompatActivity {
             Cipher cipher = Cipher.getInstance(AUTH_TRANSFORMATION);
             cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(128, iv));
             return new BiometricPrompt.CryptoObject(cipher);
+        } catch (KeyPermanentlyInvalidatedException e) {
+            finishActivity("error", 21, "Protected credentials were invalidated by a biometric enrollment change");
+            return null;
         } catch (GeneralSecurityException | IOException e) {
             return null;
         }
