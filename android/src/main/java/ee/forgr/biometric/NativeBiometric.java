@@ -429,11 +429,9 @@ public class NativeBiometric extends Plugin {
         if (KEY_ALIAS != null) {
             try {
                 KeyStore keyStore = getKeyStore();
-                keyStore.deleteEntry(KEY_ALIAS);
-                keyStore.deleteEntry("NativeBiometricSecure_" + KEY_ALIAS);
-                SharedPreferences.Editor editor = getContext()
-                    .getSharedPreferences(NATIVE_BIOMETRIC_SHARED_PREFERENCES, Context.MODE_PRIVATE)
-                    .edit();
+                SharedPreferences prefs = getContext().getSharedPreferences(NATIVE_BIOMETRIC_SHARED_PREFERENCES, Context.MODE_PRIVATE);
+                deleteCredentialKeys(keyStore, prefs, KEY_ALIAS);
+                SharedPreferences.Editor editor = prefs.edit();
                 editor.remove(KEY_ALIAS + "-username");
                 editor.remove(KEY_ALIAS + "-password");
                 editor.remove("secure_" + KEY_ALIAS);
@@ -445,6 +443,18 @@ public class NativeBiometric extends Plugin {
             }
         } else {
             call.reject("No server name was provided");
+        }
+    }
+
+    static void deleteCredentialKeys(KeyStore keyStore, SharedPreferences prefs, String server) throws KeyStoreException {
+        String protectedPrefix = AuthActivity.SECURE_KEY_PREFIX;
+        // An existing raw alias may also be the protected alias of a different server.
+        if (!server.startsWith(protectedPrefix) || !prefs.contains("secure_" + server.substring(protectedPrefix.length()))) {
+            keyStore.deleteEntry(server);
+        }
+        String protectedAlias = protectedPrefix + server;
+        if (!prefs.contains(protectedAlias + "-username") && !prefs.contains(protectedAlias + "-password")) {
+            keyStore.deleteEntry(protectedAlias);
         }
     }
 

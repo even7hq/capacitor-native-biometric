@@ -40,7 +40,7 @@ public class AuthActivity extends AppCompatActivity {
 
     private static final String AUTH_KEY_ALIAS = "NativeBiometricAuthKey";
     private static final String AUTH_TRANSFORMATION = "AES/GCM/NoPadding";
-    private static final String SECURE_KEY_PREFIX = "NativeBiometricSecure_";
+    static final String SECURE_KEY_PREFIX = "NativeBiometricSecure_";
     private static final int CREDENTIAL_GCM_IV_LENGTH = 12;
     private static final String SHARED_PREFS_NAME = "NativeBiometricSharedPreferences";
     private static final int NO_PROTECTED_CREDENTIALS = 21;
