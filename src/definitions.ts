@@ -64,7 +64,7 @@ export interface Credentials {
 export interface IsAvailableOptions {
   /**
    * Counts the device passcode toward availability when a secure lock screen is configured.
-   * On Android, this check can count the passcode on versions before Android 11.
+   * Before Android 11, this check can count the passcode even though the verification prompt cannot offer it.
    * To offer the passcode in the Android verification dialog, set the `useFallback` option
    * of BiometricOptions when calling `verifyIdentity()` on Android 11 or newer.
    */
@@ -226,7 +226,7 @@ export interface IsCredentialsSavedResult {
  */
 export enum BiometricAuthError {
   /**
-   * Unknown error occurred
+   * Unknown error occurred. On Android, this code is also returned when another biometric prompt is already open.
    */
   UNKNOWN_ERROR = 0,
   /**

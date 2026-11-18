@@ -9,6 +9,7 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.hardware.fingerprint.FingerprintManager;
 import android.os.Build;
+import android.os.Bundle;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.security.keystore.StrongBoxUnavailableException;
@@ -53,6 +54,13 @@ import org.json.JSONException;
 
 @CapacitorPlugin(name = "NativeBiometric")
 public class NativeBiometric extends Plugin {
+
+    private static final String REQUEST_ID_STATE = "biometricRequestId";
+    private static final String CALLBACK_STATE = "biometricCallback";
+    private static final String METHOD_STATE = "biometricMethod";
+
+    private final BiometricActivityRequests biometricRequests = new BiometricActivityRequests();
+    private PluginCall pendingBiometricCall;
 
     private final String pluginVersion = "8.4.3";
 
@@ -264,7 +272,7 @@ public class NativeBiometric extends Plugin {
         }
         intent.putExtra("useFallback", useFallback);
 
-        startActivityForResult(call, intent, "verifyResult");
+        launchBiometricActivity(call, intent, "verifyResult");
     }
 
     @PluginMethod
@@ -290,15 +298,24 @@ public class NativeBiometric extends Plugin {
             String negativeButtonText = call.getString("negativeButtonText", "Cancel");
             intent.putExtra("title", title);
             intent.putExtra("negativeButtonText", negativeButtonText);
-            startActivityForResult(call, intent, "setSecureCredentialsResult");
+            launchBiometricActivity(call, intent, "setSecureCredentialsResult");
         } else {
             try {
-                SharedPreferences.Editor editor = getContext()
-                    .getSharedPreferences(NATIVE_BIOMETRIC_SHARED_PREFERENCES, Context.MODE_PRIVATE)
-                    .edit();
-                editor.putString(KEY_ALIAS + "-username", encryptString(username, KEY_ALIAS));
-                editor.putString(KEY_ALIAS + "-password", encryptString(password, KEY_ALIAS));
-                editor.apply();
+                SharedPreferences prefs = getContext().getSharedPreferences(NATIVE_BIOMETRIC_SHARED_PREFERENCES, Context.MODE_PRIVATE);
+                synchronized (ProtectedCredentialStore.LOCK) {
+                    if (
+                        ProtectedCredentialStore.isReplacementAlias(KEY_ALIAS) &&
+                        !ProtectedCredentialStore.hasRawCredentials(prefs, KEY_ALIAS) &&
+                        getKeyStore().containsAlias(KEY_ALIAS)
+                    ) {
+                        throw new GeneralSecurityException("Credential alias already in use");
+                    }
+                    prefs
+                        .edit()
+                        .putString(KEY_ALIAS + "-username", encryptString(username, KEY_ALIAS))
+                        .putString(KEY_ALIAS + "-password", encryptString(password, KEY_ALIAS))
+                        .apply();
+                }
                 call.resolve();
             } catch (GeneralSecurityException | IOException e) {
                 call.reject("Failed to save credentials", e);
@@ -315,7 +332,7 @@ public class NativeBiometric extends Plugin {
         }
 
         SharedPreferences sharedPreferences = getContext().getSharedPreferences(NATIVE_BIOMETRIC_SHARED_PREFERENCES, Context.MODE_PRIVATE);
-        String encryptedData = sharedPreferences.getString("secure_" + server, null);
+        String encryptedData = sharedPreferences.getString(ProtectedCredentialStore.dataPreference(server), null);
         if (encryptedData == null) {
             call.reject("No protected credentials found", "21");
             return;
@@ -333,7 +350,7 @@ public class NativeBiometric extends Plugin {
         String negativeText = call.getString("negativeButtonText");
         if (negativeText != null) intent.putExtra("negativeButtonText", negativeText);
 
-        startActivityForResult(call, intent, "getSecureCredentialsResult");
+        launchBiometricActivity(call, intent, "getSecureCredentialsResult");
     }
 
     @PluginMethod
@@ -363,8 +380,96 @@ public class NativeBiometric extends Plugin {
         }
     }
 
+    private void launchBiometricActivity(PluginCall call, Intent intent, String callbackName) {
+        Activity activity = getActivity();
+        activity.runOnUiThread(() -> {
+            if (activity.isFinishing() || activity.isDestroyed()) {
+                call.reject("Biometric authentication was interrupted", "15");
+                return;
+            }
+            BiometricActivityRequests.Request request = biometricRequests.begin(callbackName, call.getMethodName());
+            if (request == null) {
+                call.reject("Biometric authentication is already in progress", "0");
+                return;
+            }
+            pendingBiometricCall = call;
+            intent.putExtra(BiometricActivityRequests.EXTRA_REQUEST_ID, request.id);
+            try {
+                startActivityForResult(call, intent, callbackName);
+                if (bridge.getSavedCall(call.getCallbackId()) != call) {
+                    // Capacitor can reject an unregistered launcher without throwing.
+                    clearBiometricCall(request);
+                }
+            } catch (RuntimeException e) {
+                clearBiometricCall(request);
+                call.reject("Unable to show the biometric prompt", "0", e);
+            }
+        });
+    }
+
+    private void clearBiometricCall(BiometricActivityRequests.Request request) {
+        biometricRequests.finish(request.callbackName, request.id, false);
+        pendingBiometricCall = null;
+    }
+
+    private PluginCall takeBiometricCall(PluginCall restoredCall, ActivityResult result, String callbackName) {
+        Intent data = result.getData();
+        String requestId = data == null ? null : data.getStringExtra(BiometricActivityRequests.EXTRA_REQUEST_ID);
+        BiometricActivityRequests.Request request = biometricRequests.finish(
+            callbackName,
+            requestId,
+            result.getResultCode() != Activity.RESULT_OK
+        );
+        if (request == null) {
+            return null;
+        }
+
+        PluginCall call = pendingBiometricCall;
+        pendingBiometricCall = null;
+        if (call != null) {
+            return call;
+        }
+        if (
+            restoredCall != null &&
+            PluginCall.CALLBACK_ID_DANGLING.equals(restoredCall.getCallbackId()) &&
+            getPluginHandle().getId().equals(restoredCall.getPluginId()) &&
+            request.methodName.equals(restoredCall.getMethodName())
+        ) {
+            return restoredCall;
+        }
+        return null;
+    }
+
+    @Override
+    protected Bundle saveInstanceState() {
+        BiometricActivityRequests.Request request = biometricRequests.current();
+        if (request == null) {
+            return null;
+        }
+        Bundle state = super.saveInstanceState();
+        if (state == null) {
+            state = new Bundle();
+        }
+        state.putString(REQUEST_ID_STATE, request.id);
+        state.putString(CALLBACK_STATE, request.callbackName);
+        state.putString(METHOD_STATE, request.methodName);
+        return state;
+    }
+
+    @Override
+    protected void restoreState(Bundle state) {
+        String id = state.getString(REQUEST_ID_STATE);
+        String callbackName = state.getString(CALLBACK_STATE);
+        String methodName = state.getString(METHOD_STATE);
+        if (id != null && callbackName != null && methodName != null) {
+            biometricRequests.restore(id, callbackName, methodName);
+        }
+    }
+
     @ActivityCallback
-    private void verifyResult(PluginCall call, ActivityResult result) {
+    private void verifyResult(PluginCall restoredCall, ActivityResult result) {
+        PluginCall call = takeBiometricCall(restoredCall, result, "verifyResult");
+        if (call == null) return;
         if (result.getResultCode() == Activity.RESULT_OK) {
             Intent data = result.getData();
             if (data != null && data.hasExtra("result")) {
@@ -388,7 +493,9 @@ public class NativeBiometric extends Plugin {
     }
 
     @ActivityCallback
-    private void setSecureCredentialsResult(PluginCall call, ActivityResult result) {
+    private void setSecureCredentialsResult(PluginCall restoredCall, ActivityResult result) {
+        PluginCall call = takeBiometricCall(restoredCall, result, "setSecureCredentialsResult");
+        if (call == null) return;
         if (result.getResultCode() == Activity.RESULT_OK) {
             Intent data = result.getData();
             if (data != null && "success".equals(data.getStringExtra("result"))) {
@@ -404,7 +511,9 @@ public class NativeBiometric extends Plugin {
     }
 
     @ActivityCallback
-    private void getSecureCredentialsResult(PluginCall call, ActivityResult result) {
+    private void getSecureCredentialsResult(PluginCall restoredCall, ActivityResult result) {
+        PluginCall call = takeBiometricCall(restoredCall, result, "getSecureCredentialsResult");
+        if (call == null) return;
         if (result.getResultCode() == Activity.RESULT_OK) {
             Intent data = result.getData();
             if (data != null && "success".equals(data.getStringExtra("result"))) {
@@ -428,15 +537,11 @@ public class NativeBiometric extends Plugin {
 
         if (KEY_ALIAS != null) {
             try {
-                KeyStore keyStore = getKeyStore();
                 SharedPreferences prefs = getContext().getSharedPreferences(NATIVE_BIOMETRIC_SHARED_PREFERENCES, Context.MODE_PRIVATE);
-                deleteCredentialKeys(keyStore, prefs, KEY_ALIAS);
-                SharedPreferences.Editor editor = prefs.edit();
-                editor.remove(KEY_ALIAS + "-username");
-                editor.remove(KEY_ALIAS + "-password");
-                editor.remove("secure_" + KEY_ALIAS);
-                editor.apply();
-
+                synchronized (ProtectedCredentialStore.LOCK) {
+                    ProtectedCredentialStore.cancelWrite(KEY_ALIAS);
+                    deleteCredentialKeys(getKeyStore(), prefs, KEY_ALIAS);
+                }
                 call.resolve();
             } catch (KeyStoreException | CertificateException | NoSuchAlgorithmException | IOException e) {
                 call.reject("Failed to delete", e);
@@ -447,15 +552,33 @@ public class NativeBiometric extends Plugin {
     }
 
     static void deleteCredentialKeys(KeyStore keyStore, SharedPreferences prefs, String server) throws KeyStoreException {
-        String protectedPrefix = AuthActivity.SECURE_KEY_PREFIX;
-        // An existing raw alias may also be the protected alias of a different server.
-        if (!server.startsWith(protectedPrefix) || !prefs.contains("secure_" + server.substring(protectedPrefix.length()))) {
+        String protectedPrefix = ProtectedCredentialStore.LEGACY_KEY_PREFIX;
+        boolean isOtherLegacyKey = false;
+        if (server.startsWith(protectedPrefix)) {
+            String otherServer = server.substring(protectedPrefix.length());
+            isOtherLegacyKey =
+                prefs.contains(ProtectedCredentialStore.dataPreference(otherServer)) &&
+                server.equals(ProtectedCredentialStore.readAlias(prefs, otherServer));
+        }
+        boolean isReplacementKey =
+            ProtectedCredentialStore.isReplacementAlias(server) && !ProtectedCredentialStore.hasRawCredentials(prefs, server);
+        if (!isOtherLegacyKey && !isReplacementKey) {
             keyStore.deleteEntry(server);
         }
-        String protectedAlias = protectedPrefix + server;
-        if (!prefs.contains(protectedAlias + "-username") && !prefs.contains(protectedAlias + "-password")) {
-            keyStore.deleteEntry(protectedAlias);
+        prefs.edit().remove(server + "-username").remove(server + "-password").apply();
+
+        String legacyAlias = protectedPrefix + server;
+        String protectedAlias = ProtectedCredentialStore.readAlias(prefs, server);
+        if (!legacyAlias.equals(protectedAlias)) {
+            ProtectedCredentialStore.deleteProtectedKey(keyStore, prefs, legacyAlias);
         }
+        ProtectedCredentialStore.deleteProtectedKey(keyStore, prefs, protectedAlias);
+        prefs
+            .edit()
+            .remove(ProtectedCredentialStore.dataPreference(server))
+            .remove(ProtectedCredentialStore.aliasPreference(server))
+            .remove(ProtectedCredentialStore.policyPreference(server))
+            .apply();
     }
 
     @PluginMethod
@@ -471,7 +594,7 @@ public class NativeBiometric extends Plugin {
             String password = sharedPreferences.getString(KEY_ALIAS + "-password", null);
 
             boolean hasUnprotected = username != null && password != null;
-            boolean hasProtected = sharedPreferences.getString("secure_" + KEY_ALIAS, null) != null;
+            boolean hasProtected = sharedPreferences.getString(ProtectedCredentialStore.dataPreference(KEY_ALIAS), null) != null;
 
             JSObject ret = new JSObject();
             ret.put("isSaved", hasUnprotected || hasProtected);
