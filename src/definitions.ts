@@ -63,10 +63,9 @@ export interface Credentials {
 
 export interface IsAvailableOptions {
   /**
-   * Only for iOS.
-   * Specifies if should fallback to passcode authentication if biometric authentication is not available.
-   * On Android, this parameter is ignored due to BiometricPrompt API constraints:
-   * DEVICE_CREDENTIAL authenticator and negative button (cancel) are mutually exclusive.
+   * Counts the device passcode toward availability when a secure lock screen is configured.
+   * To request the passcode in the verification dialog, pass `BiometricOptions.useFallback`
+   * separately to `verifyIdentity()`. The Android fallback option works on Android 11 or newer.
    */
   useFallback: boolean;
 }
@@ -114,10 +113,10 @@ export interface BiometricOptions {
   description?: string;
   negativeButtonText?: string;
   /**
-   * Only for iOS.
-   * Specifies if should fallback to passcode authentication if biometric authentication fails.
-   * On Android, this parameter is ignored due to BiometricPrompt API constraints:
-   * DEVICE_CREDENTIAL authenticator and negative button (cancel) are mutually exclusive.
+   * Requests the device passcode as an alternative in the verification dialog.
+   * On Android 11 or newer, the dialog can offer a configured PIN, pattern or password
+   * alongside strong biometrics. This option defaults to false on Android. On older
+   * Android versions, the default dialog keeps strong biometrics and the cancel button.
    */
   useFallback?: boolean;
   /**
@@ -135,7 +134,8 @@ export interface BiometricOptions {
   /**
    * Only for Android.
    * Specify which biometry types are allowed for authentication.
-   * If not specified, all available types will be allowed.
+   * If not specified, the Android dialog defaults to strong biometrics. The
+   * `useFallback` option can also add the device credential on Android 11 or newer.
    * @example [BiometryType.FINGERPRINT, BiometryType.FACE_AUTHENTICATION]
    */
   allowedBiometryTypes?: BiometryType[];
@@ -287,6 +287,11 @@ export enum BiometricAuthError {
    * Platform: Android, iOS
    */
   USER_FALLBACK = 17,
+  /**
+   * No usable biometric-protected credentials exist for the requested server.
+   * Returned by `getSecureCredentials()` when the user needs to enroll again.
+   */
+  NO_PROTECTED_CREDENTIALS_FOUND = 21,
 }
 
 /**

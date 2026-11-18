@@ -17,6 +17,8 @@ import ee.forgr.biometric.capacitornativebiometric.R;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
+import java.security.InvalidKeyException;
+import java.security.Key;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
@@ -24,6 +26,7 @@ import java.security.UnrecoverableKeyException;
 import java.security.cert.CertificateException;
 import java.util.Objects;
 import java.util.concurrent.Executor;
+import javax.crypto.AEADBadTagException;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
@@ -37,6 +40,7 @@ public class AuthActivity extends AppCompatActivity {
     private static final String SECURE_KEY_PREFIX = "NativeBiometricSecure_";
     private static final int CREDENTIAL_GCM_IV_LENGTH = 12;
     private static final String SHARED_PREFS_NAME = "NativeBiometricSharedPreferences";
+    private static final int NO_PROTECTED_CREDENTIALS = 21;
 
     private BiometricPrompt biometricPrompt;
     private Cipher authCipher;
@@ -73,33 +77,18 @@ public class AuthActivity extends AppCompatActivity {
             .setSubtitle(getIntent().hasExtra("subtitle") ? getIntent().getStringExtra("subtitle") : null)
             .setDescription(getIntent().hasExtra("description") ? getIntent().getStringExtra("description") : null);
 
-        // When useFallback=true, DEVICE_CREDENTIAL is added so the system shows PIN/pattern/password
-        // as a fallback option inside the native biometric prompt.
-        // Android API constraint: setNegativeButtonText() and DEVICE_CREDENTIAL are mutually exclusive,
-        // so the negative/cancel button is omitted when useFallback=true (the back gesture cancels instead).
         boolean useFallback = getIntent().getBooleanExtra("useFallback", false);
         int[] allowedTypes = getIntent().getIntArrayExtra("allowedBiometryTypes");
-
-        int authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG;
-        if (allowedTypes != null) {
-            // Filter authenticators based on allowed types
-            authenticators = getAllowedAuthenticators(allowedTypes);
-        }
-        if (useFallback) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                // API 30+: BIOMETRIC_STRONG | DEVICE_CREDENTIAL is supported
-                authenticators |= BiometricManager.Authenticators.DEVICE_CREDENTIAL;
-            }
-            // API 28-29: combination unsupported; keep BIOMETRIC_STRONG only so fingerprint works
-        }
+        int authenticators = resolvePromptAuthenticators(allowedTypes, useFallback, Build.VERSION.SDK_INT);
         builder.setAllowedAuthenticators(authenticators);
 
-        // Negative button is incompatible with DEVICE_CREDENTIAL — omit it when useFallback=true
-        if (!useFallback) {
+        boolean deviceCredentialAllowed = allowsDeviceCredential(authenticators);
+        if (!deviceCredentialAllowed) {
             String negativeText = getIntent().getStringExtra("negativeButtonText");
             builder.setNegativeButtonText(negativeText != null ? negativeText : "Cancel");
         }
 
+        boolean verifyWithoutCrypto = "verify".equals(mode) && (useFallback || deviceCredentialAllowed);
         BiometricPrompt.PromptInfo promptInfo = builder.build();
 
         biometricPrompt = new BiometricPrompt(
@@ -127,8 +116,7 @@ public class AuthActivity extends AppCompatActivity {
                     } else if ("getSecureCredentials".equals(mode)) {
                         handleGetSecureCredentials(result);
                     } else {
-                        // When useFallback=true, DEVICE_CREDENTIAL is used which does not produce a CryptoObject.
-                        if (!useFallback && !validateCryptoObject(result)) {
+                        if (!verifyWithoutCrypto && !validateCryptoObject(result)) {
                             finishActivity("error", 10, "Biometric security check failed");
                             return;
                         }
@@ -151,8 +139,8 @@ public class AuthActivity extends AppCompatActivity {
             }
         );
 
-        // When useFallback, authenticate without a CryptoObject (identity verification only, no decryption).
-        if (useFallback) {
+        // The identity prompt can verify the user without unlocking a protected credential.
+        if (verifyWithoutCrypto) {
             biometricPrompt.authenticate(promptInfo);
             return;
         }
@@ -336,23 +324,38 @@ public class AuthActivity extends AppCompatActivity {
         }
     }
 
+    static SecretKey findCredentialKey(KeyStore keyStore, String server) throws GeneralSecurityException {
+        Key key = keyStore.getKey(SECURE_KEY_PREFIX + server, null);
+        return key instanceof SecretKey ? (SecretKey) key : null;
+    }
+
     private BiometricPrompt.CryptoObject createCredentialDecryptCryptoObject() {
         try {
             String server = getIntent().getStringExtra("server");
             SharedPreferences prefs = getSharedPreferences(SHARED_PREFS_NAME, MODE_PRIVATE);
             String encryptedData = prefs.getString("secure_" + server, null);
-            if (encryptedData == null) return null;
+            if (encryptedData == null) {
+                finishActivity("error", NO_PROTECTED_CREDENTIALS, "No protected credentials found");
+                return null;
+            }
+
+            KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
+            keyStore.load(null);
+            SecretKey key = findCredentialKey(keyStore, server);
+            if (key == null) {
+                finishActivity("error", NO_PROTECTED_CREDENTIALS, "No protected credentials found");
+                return null;
+            }
 
             byte[] combined = Base64.decode(encryptedData, Base64.DEFAULT);
             byte[] iv = new byte[CREDENTIAL_GCM_IV_LENGTH];
             System.arraycopy(combined, 0, iv, 0, CREDENTIAL_GCM_IV_LENGTH);
 
-            SecretKey key = getOrCreateCredentialKey(server, 0);
             Cipher cipher = Cipher.getInstance(AUTH_TRANSFORMATION);
             cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(128, iv));
             return new BiometricPrompt.CryptoObject(cipher);
-        } catch (KeyPermanentlyInvalidatedException e) {
-            finishActivity("error", 21, "Protected credentials were invalidated by a biometric enrollment change");
+        } catch (InvalidKeyException | UnrecoverableKeyException e) {
+            finishActivity("error", NO_PROTECTED_CREDENTIALS, "Protected credentials could not be recovered");
             return null;
         } catch (GeneralSecurityException | IOException e) {
             return null;
@@ -397,7 +400,7 @@ public class AuthActivity extends AppCompatActivity {
             SharedPreferences prefs = getSharedPreferences(SHARED_PREFS_NAME, MODE_PRIVATE);
             String encryptedData = prefs.getString("secure_" + server, null);
             if (encryptedData == null) {
-                finishActivity("error", 21, "No protected credentials found");
+                finishActivity("error", NO_PROTECTED_CREDENTIALS, "No protected credentials found");
                 return;
             }
 
@@ -415,6 +418,8 @@ public class AuthActivity extends AppCompatActivity {
             intent.putExtra("password", json.getString("p"));
             setResult(RESULT_OK, intent);
             finish();
+        } catch (AEADBadTagException e) {
+            finishActivity("error", NO_PROTECTED_CREDENTIALS, "Protected credentials could not be recovered");
         } catch (Exception e) {
             finishActivity("error", 0, "Failed to decrypt credentials: " + e.getMessage());
         }
@@ -455,7 +460,21 @@ public class AuthActivity extends AppCompatActivity {
         }
     }
 
-    private int getAllowedAuthenticators(int[] allowedTypes) {
+    static int resolvePromptAuthenticators(int[] allowedTypes, boolean useFallback, int sdkVersion) {
+        int authenticators = allowedTypes == null
+            ? BiometricManager.Authenticators.BIOMETRIC_STRONG
+            : getAllowedAuthenticators(allowedTypes);
+        if (useFallback && sdkVersion >= Build.VERSION_CODES.R) {
+            authenticators |= BiometricManager.Authenticators.DEVICE_CREDENTIAL;
+        }
+        return authenticators;
+    }
+
+    static boolean allowsDeviceCredential(int authenticators) {
+        return (authenticators & BiometricManager.Authenticators.DEVICE_CREDENTIAL) != 0;
+    }
+
+    private static int getAllowedAuthenticators(int[] allowedTypes) {
         int authenticators = 0;
         for (int type : allowedTypes) {
             switch (type) {
