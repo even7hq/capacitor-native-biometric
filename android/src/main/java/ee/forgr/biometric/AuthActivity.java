@@ -41,8 +41,6 @@ public class AuthActivity extends AppCompatActivity {
     private static final String AUTH_KEY_ALIAS = "NativeBiometricAuthKey";
     private static final String AUTH_TRANSFORMATION = "AES/GCM/NoPadding";
     private static final String SECURE_KEY_PREFIX = "NativeBiometricSecure_";
-    private static final String PER_USE_KEY_PREFIX = "NativeBiometricPerUse_";
-    private static final String PER_USE_PAYLOAD_PREFIX = "per-use:";
     private static final int CREDENTIAL_GCM_IV_LENGTH = 12;
     private static final String SHARED_PREFS_NAME = "NativeBiometricSharedPreferences";
     private static final int NO_PROTECTED_CREDENTIALS = 21;
@@ -51,7 +49,6 @@ public class AuthActivity extends AppCompatActivity {
     private Cipher authCipher;
     private SecretKey credentialKeyAwaitingAuthentication;
     private String encryptedCredentials;
-    private boolean writeWithPerUseAlias;
     private String mode;
     private int maxAttempts;
     private int counter = 0;
@@ -321,25 +318,14 @@ public class AuthActivity extends AppCompatActivity {
             int accessControl = getIntent().getIntExtra("accessControl", 2);
             KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
             keyStore.load(null);
-            SharedPreferences prefs = getSharedPreferences(SHARED_PREFS_NAME, MODE_PRIVATE);
-            String payload = prefs.getString("secure_" + server, null);
-            String alias = credentialKeyAlias(server, payload);
+            String alias = SECURE_KEY_PREFIX + server;
             SecretKey key = getOrCreateCredentialKey(keyStore, alias, accessControl);
-            writeWithPerUseAlias = usesPerUseAlias(payload);
-            if (!writeWithPerUseAlias && hasLegacyAuthenticationWindow(key)) {
-                // Keep the legacy key and ciphertext intact until the replacement has been authenticated.
-                writeWithPerUseAlias = true;
-                alias = PER_USE_KEY_PREFIX + server;
-                key = getOrCreateCredentialKey(keyStore, alias, accessControl);
-            }
-            Cipher cipher;
             try {
-                cipher = initCredentialCipher(Cipher.ENCRYPT_MODE, key);
+                return prepareCredentialCryptoObject(Cipher.ENCRYPT_MODE, key);
             } catch (KeyPermanentlyInvalidatedException e) {
                 keyStore.deleteEntry(alias);
-                cipher = initCredentialCipher(Cipher.ENCRYPT_MODE, getOrCreateCredentialKey(keyStore, alias, accessControl));
+                return prepareCredentialCryptoObject(Cipher.ENCRYPT_MODE, getOrCreateCredentialKey(keyStore, alias, accessControl));
             }
-            return new BiometricPrompt.CryptoObject(cipher);
         } catch (UserNotAuthenticatedException e) {
             finishActivity("error", 10, "Biometric authentication required");
             return null;
@@ -348,22 +334,9 @@ public class AuthActivity extends AppCompatActivity {
         }
     }
 
-    private static String credentialKeyAlias(String server, String payload) {
-        return (usesPerUseAlias(payload) ? PER_USE_KEY_PREFIX : SECURE_KEY_PREFIX) + server;
-    }
-
-    private static boolean usesPerUseAlias(String payload) {
-        return payload != null && payload.startsWith(PER_USE_PAYLOAD_PREFIX);
-    }
-
-    static void deleteCredentialKeys(KeyStore keyStore, String server) throws KeyStoreException {
-        keyStore.deleteEntry(SECURE_KEY_PREFIX + server);
-        keyStore.deleteEntry(PER_USE_KEY_PREFIX + server);
-    }
-
-    /** Looks up the key for the stored payload in a loaded keystore without creating or replacing any alias. */
-    static SecretKey findCredentialKey(KeyStore keyStore, String server, String payload) throws GeneralSecurityException {
-        Key key = keyStore.getKey(credentialKeyAlias(server, payload), null);
+    /** Looks up a protected credential in a loaded keystore without creating or replacing any alias. */
+    static SecretKey findCredentialKey(KeyStore keyStore, String server) throws GeneralSecurityException {
+        Key key = keyStore.getKey(SECURE_KEY_PREFIX + server, null);
         return key instanceof SecretKey ? (SecretKey) key : null;
     }
 
@@ -379,18 +352,13 @@ public class AuthActivity extends AppCompatActivity {
 
             KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
             keyStore.load(null);
-            SecretKey key = findCredentialKey(keyStore, server, encryptedCredentials);
+            SecretKey key = findCredentialKey(keyStore, server);
             if (key == null) {
                 finishActivity("error", NO_PROTECTED_CREDENTIALS, "No protected credentials found");
                 return null;
             }
 
-            if (!usesPerUseAlias(encryptedCredentials) && hasLegacyAuthenticationWindow(key)) {
-                // A time-window key cannot be bound to a CryptoObject. Use a strong biometric prompt first.
-                credentialKeyAwaitingAuthentication = key;
-                return null;
-            }
-            return new BiometricPrompt.CryptoObject(initCredentialCipher(Cipher.DECRYPT_MODE, key));
+            return prepareCredentialCryptoObject(Cipher.DECRYPT_MODE, key);
         } catch (UserNotAuthenticatedException e) {
             finishActivity("error", 10, "Biometric authentication required");
             return null;
@@ -402,17 +370,15 @@ public class AuthActivity extends AppCompatActivity {
         }
     }
 
-    private boolean hasLegacyAuthenticationWindow(SecretKey key) throws GeneralSecurityException {
+    private BiometricPrompt.CryptoObject prepareCredentialCryptoObject(int cipherMode, SecretKey key) throws GeneralSecurityException {
         SecretKeyFactory factory = SecretKeyFactory.getInstance(key.getAlgorithm(), "AndroidKeyStore");
         KeyInfo info = (KeyInfo) factory.getKeySpec(key, KeyInfo.class);
-        return info.getUserAuthenticationValidityDurationSeconds() > 0;
-    }
-
-    private byte[] decodeCredentialPayload() {
-        String payload = usesPerUseAlias(encryptedCredentials)
-            ? encryptedCredentials.substring(PER_USE_PAYLOAD_PREFIX.length())
-            : encryptedCredentials;
-        return Base64.decode(payload, Base64.DEFAULT);
+        if (info.getUserAuthenticationValidityDurationSeconds() > 0) {
+            // Preserve the old key and authenticate before initializing a time-window cipher.
+            credentialKeyAwaitingAuthentication = key;
+            return null;
+        }
+        return new BiometricPrompt.CryptoObject(initCredentialCipher(cipherMode, key));
     }
 
     private Cipher initCredentialCipher(int cipherMode, SecretKey key) throws GeneralSecurityException {
@@ -420,7 +386,7 @@ public class AuthActivity extends AppCompatActivity {
         if (cipherMode == Cipher.ENCRYPT_MODE) {
             cipher.init(cipherMode, key);
         } else {
-            byte[] combined = decodeCredentialPayload();
+            byte[] combined = Base64.decode(encryptedCredentials, Base64.DEFAULT);
             cipher.init(cipherMode, key, new GCMParameterSpec(128, combined, 0, CREDENTIAL_GCM_IV_LENGTH));
         }
         return cipher;
@@ -432,12 +398,12 @@ public class AuthActivity extends AppCompatActivity {
         if (credentialKeyAwaitingAuthentication != null) {
             try {
                 // Initialize and use the original key immediately, within its authentication window.
-                cipher = initCredentialCipher(Cipher.DECRYPT_MODE, credentialKeyAwaitingAuthentication);
+                cipher = initCredentialCipher(writing ? Cipher.ENCRYPT_MODE : Cipher.DECRYPT_MODE, credentialKeyAwaitingAuthentication);
             } catch (UserNotAuthenticatedException e) {
                 finishActivity("error", 10, "Biometric authentication required");
                 return;
             } catch (InvalidKeyException e) {
-                finishActivity("error", NO_PROTECTED_CREDENTIALS, "Protected credential key unavailable");
+                finishActivity("error", writing ? 0 : NO_PROTECTED_CREDENTIALS, "Protected credential key unavailable");
                 return;
             } catch (GeneralSecurityException e) {
                 finishActivity("error", 0, "Biometric crypto object unavailable");
@@ -479,7 +445,7 @@ public class AuthActivity extends AppCompatActivity {
             String encoded = Base64.encodeToString(combined, Base64.DEFAULT);
 
             SharedPreferences.Editor editor = getSharedPreferences(SHARED_PREFS_NAME, MODE_PRIVATE).edit();
-            editor.putString("secure_" + server, writeWithPerUseAlias ? PER_USE_PAYLOAD_PREFIX + encoded : encoded);
+            editor.putString("secure_" + server, encoded);
             editor.apply();
 
             finishActivity();
@@ -504,7 +470,7 @@ public class AuthActivity extends AppCompatActivity {
                 return;
             }
 
-            byte[] combined = decodeCredentialPayload();
+            byte[] combined = Base64.decode(encryptedCredentials, Base64.DEFAULT);
             byte[] ciphertext = new byte[combined.length - CREDENTIAL_GCM_IV_LENGTH];
             System.arraycopy(combined, CREDENTIAL_GCM_IV_LENGTH, ciphertext, 0, ciphertext.length);
 

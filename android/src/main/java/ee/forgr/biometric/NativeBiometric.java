@@ -428,7 +428,9 @@ public class NativeBiometric extends Plugin {
 
         if (KEY_ALIAS != null) {
             try {
-                getKeyStore().deleteEntry(KEY_ALIAS);
+                KeyStore keyStore = getKeyStore();
+                keyStore.deleteEntry(KEY_ALIAS);
+                keyStore.deleteEntry("NativeBiometricSecure_" + KEY_ALIAS);
                 SharedPreferences.Editor editor = getContext()
                     .getSharedPreferences(NATIVE_BIOMETRIC_SHARED_PREFERENCES, Context.MODE_PRIVATE)
                     .edit();
@@ -436,12 +438,6 @@ public class NativeBiometric extends Plugin {
                 editor.remove(KEY_ALIAS + "-password");
                 editor.remove("secure_" + KEY_ALIAS);
                 editor.apply();
-
-                try {
-                    AuthActivity.deleteCredentialKeys(getKeyStore(), KEY_ALIAS);
-                } catch (KeyStoreException e) {
-                    // Ignore — may not exist
-                }
 
                 call.resolve();
             } catch (KeyStoreException | CertificateException | NoSuchAlgorithmException | IOException e) {
