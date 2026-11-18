@@ -438,7 +438,7 @@ public class NativeBiometric extends Plugin {
                 editor.apply();
 
                 try {
-                    getKeyStore().deleteEntry("NativeBiometricSecure_" + KEY_ALIAS);
+                    AuthActivity.deleteCredentialKeys(getKeyStore(), KEY_ALIAS);
                 } catch (KeyStoreException e) {
                     // Ignore — may not exist
                 }

@@ -417,6 +417,9 @@ Credentials must have been stored with accessControl set to BIOMETRY_CURRENT_SET
 
 On iOS, the system automatically shows the biometric prompt when accessing the protected Keychain item.
 On Android, BiometricPrompt is shown with a CryptoObject bound to the credential decryption key.
+Credentials stored with a legacy Android authentication window use a strong biometric prompt
+followed immediately by decryption with the original key.
+Native rejections with a <a href="#biometricautherror">BiometricAuthError</a> use a string in `code`, such as `"21"` for missing credentials.
 
 | Param         | Type                                                                                |
 | ------------- | ----------------------------------------------------------------------------------- |
@@ -482,9 +485,9 @@ Result from isAvailable() method indicating biometric authentication availabilit
 
 #### IsAvailableOptions
 
-| Prop              | Type                 | Description                                                                                                                                                                                                                                                                                                 |
-| ----------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`useFallback`** | <code>boolean</code> | Counts the device passcode toward availability when a secure lock screen is configured. To request the passcode in the verification dialog, pass <a href="#biometricoptions">`BiometricOptions</a>.useFallback` separately to `verifyIdentity()`. The Android fallback option works on Android 11 or newer. |
+| Prop              | Type                 | Description                                                                                                                                                                                                                                                                                                                                                             |
+| ----------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`useFallback`** | <code>boolean</code> | Counts the device passcode toward availability when a secure lock screen is configured. On Android, this check can count the passcode on versions before Android 11. To offer the passcode in the Android verification dialog, set the `useFallback` option of <a href="#biometricoptions">BiometricOptions</a> when calling `verifyIdentity()` on Android 11 or newer. |
 
 
 #### PluginListenerHandle
@@ -607,22 +610,22 @@ Callback type for biometry change listener
 
 #### BiometricAuthError
 
-| Members                              | Value           | Description                                                                                                                                         |
-| ------------------------------------ | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`UNKNOWN_ERROR`**                  | <code>0</code>  | Unknown error occurred                                                                                                                              |
-| **`BIOMETRICS_UNAVAILABLE`**         | <code>1</code>  | Biometrics are unavailable (no hardware or hardware error) Platform: Android, iOS                                                                   |
-| **`USER_LOCKOUT`**                   | <code>2</code>  | User has been locked out due to too many failed attempts Platform: Android, iOS                                                                     |
-| **`BIOMETRICS_NOT_ENROLLED`**        | <code>3</code>  | No biometrics are enrolled on the device Platform: Android, iOS                                                                                     |
-| **`USER_TEMPORARY_LOCKOUT`**         | <code>4</code>  | User is temporarily locked out (Android: 30 second lockout) Platform: Android                                                                       |
-| **`AUTHENTICATION_FAILED`**          | <code>10</code> | Authentication failed (user did not authenticate successfully) Platform: Android, iOS                                                               |
-| **`APP_CANCEL`**                     | <code>11</code> | App canceled the authentication (iOS only) Platform: iOS                                                                                            |
-| **`INVALID_CONTEXT`**                | <code>12</code> | Invalid context (iOS only) Platform: iOS                                                                                                            |
-| **`NOT_INTERACTIVE`**                | <code>13</code> | Authentication was not interactive (iOS only) Platform: iOS                                                                                         |
-| **`PASSCODE_NOT_SET`**               | <code>14</code> | Passcode/PIN is not set on the device Platform: Android, iOS                                                                                        |
-| **`SYSTEM_CANCEL`**                  | <code>15</code> | System canceled the authentication (e.g., due to screen lock) Platform: Android, iOS                                                                |
-| **`USER_CANCEL`**                    | <code>16</code> | User canceled the authentication Platform: Android, iOS                                                                                             |
-| **`USER_FALLBACK`**                  | <code>17</code> | User chose to use fallback authentication method Platform: Android, iOS                                                                             |
-| **`NO_PROTECTED_CREDENTIALS_FOUND`** | <code>21</code> | No usable biometric-protected credentials exist for the requested server. Returned by `getSecureCredentials()` when the user needs to enroll again. |
+| Members                              | Value           | Description                                                                                                                                                                |
+| ------------------------------------ | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`UNKNOWN_ERROR`**                  | <code>0</code>  | Unknown error occurred                                                                                                                                                     |
+| **`BIOMETRICS_UNAVAILABLE`**         | <code>1</code>  | Biometrics are unavailable (no hardware or hardware error) Platform: Android, iOS                                                                                          |
+| **`USER_LOCKOUT`**                   | <code>2</code>  | User has been locked out due to too many failed attempts Platform: Android, iOS                                                                                            |
+| **`BIOMETRICS_NOT_ENROLLED`**        | <code>3</code>  | No biometrics are enrolled on the device Platform: Android, iOS                                                                                                            |
+| **`USER_TEMPORARY_LOCKOUT`**         | <code>4</code>  | User is temporarily locked out (Android: 30 second lockout) Platform: Android                                                                                              |
+| **`AUTHENTICATION_FAILED`**          | <code>10</code> | Authentication failed (user did not authenticate successfully) Platform: Android, iOS                                                                                      |
+| **`APP_CANCEL`**                     | <code>11</code> | App canceled the authentication (iOS only) Platform: iOS                                                                                                                   |
+| **`INVALID_CONTEXT`**                | <code>12</code> | Invalid context (iOS only) Platform: iOS                                                                                                                                   |
+| **`NOT_INTERACTIVE`**                | <code>13</code> | Authentication was not interactive (iOS only) Platform: iOS                                                                                                                |
+| **`PASSCODE_NOT_SET`**               | <code>14</code> | Passcode/PIN is not set on the device Platform: Android, iOS                                                                                                               |
+| **`SYSTEM_CANCEL`**                  | <code>15</code> | System canceled the authentication (e.g., due to screen lock) Platform: Android, iOS                                                                                       |
+| **`USER_CANCEL`**                    | <code>16</code> | User canceled the authentication Platform: Android, iOS                                                                                                                    |
+| **`USER_FALLBACK`**                  | <code>17</code> | User chose to use fallback authentication method Platform: Android, iOS                                                                                                    |
+| **`NO_PROTECTED_CREDENTIALS_FOUND`** | <code>21</code> | No usable biometric-protected credentials exist for the requested server. `getSecureCredentials()` reports this error as `code: "21"` when the user needs to enroll again. |
 
 
 #### AccessControl

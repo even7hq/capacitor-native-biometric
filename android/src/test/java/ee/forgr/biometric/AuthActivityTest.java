@@ -36,7 +36,7 @@ public class AuthActivityTest {
         KeyStore keyStore = KeyStore.getInstance("PKCS12");
         keyStore.load(null);
 
-        assertNull(AuthActivity.findCredentialKey(keyStore, "test"));
+        assertNull(AuthActivity.findCredentialKey(keyStore, "test", "payload"));
         assertEquals(0, keyStore.size());
     }
 
@@ -51,7 +51,26 @@ public class AuthActivityTest {
             new KeyStore.PasswordProtection(new char[0])
         );
 
-        assertArrayEquals(existing.getEncoded(), AuthActivity.findCredentialKey(keyStore, "test").getEncoded());
+        assertArrayEquals(existing.getEncoded(), AuthActivity.findCredentialKey(keyStore, "test", "payload").getEncoded());
         assertEquals(1, keyStore.size());
+    }
+
+    @Test
+    public void replacementKeyIsUsedOnlyAfterItsPayloadIsStored() throws Exception {
+        KeyStore keyStore = KeyStore.getInstance("PKCS12");
+        keyStore.load(null);
+        KeyGenerator keyGenerator = KeyGenerator.getInstance("AES");
+        SecretKey legacy = keyGenerator.generateKey();
+        SecretKey replacement = keyGenerator.generateKey();
+        KeyStore.PasswordProtection protection = new KeyStore.PasswordProtection(new char[0]);
+        keyStore.setEntry("NativeBiometricSecure_test", new KeyStore.SecretKeyEntry(legacy), protection);
+        keyStore.setEntry("NativeBiometricPerUse_test", new KeyStore.SecretKeyEntry(replacement), protection);
+
+        assertArrayEquals(legacy.getEncoded(), AuthActivity.findCredentialKey(keyStore, "test", "old").getEncoded());
+        assertArrayEquals(replacement.getEncoded(), AuthActivity.findCredentialKey(keyStore, "test", "per-use:new").getEncoded());
+        assertEquals(2, keyStore.size());
+
+        AuthActivity.deleteCredentialKeys(keyStore, "test");
+        assertEquals(0, keyStore.size());
     }
 }

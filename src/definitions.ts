@@ -64,8 +64,9 @@ export interface Credentials {
 export interface IsAvailableOptions {
   /**
    * Counts the device passcode toward availability when a secure lock screen is configured.
-   * To request the passcode in the verification dialog, pass `BiometricOptions.useFallback`
-   * separately to `verifyIdentity()`. The Android fallback option works on Android 11 or newer.
+   * On Android, this check can count the passcode on versions before Android 11.
+   * To offer the passcode in the Android verification dialog, set the `useFallback` option
+   * of BiometricOptions when calling `verifyIdentity()` on Android 11 or newer.
    */
   useFallback: boolean;
 }
@@ -217,7 +218,8 @@ export interface IsCredentialsSavedResult {
 
 /**
  * Biometric authentication error codes.
- * These error codes are used in both isAvailable() and verifyIdentity() methods.
+ * The `isAvailable()` result reports these codes as numbers in `errorCode`.
+ * Native authentication errors expose the numeric value as a string in the rejection's `code`.
  *
  * Keep this in sync with BiometricAuthError in README.md
  * Update whenever `convertToPluginErrorCode` functions are modified
@@ -289,7 +291,7 @@ export enum BiometricAuthError {
   USER_FALLBACK = 17,
   /**
    * No usable biometric-protected credentials exist for the requested server.
-   * Returned by `getSecureCredentials()` when the user needs to enroll again.
+   * `getSecureCredentials()` reports this error as `code: "21"` when the user needs to enroll again.
    */
   NO_PROTECTED_CREDENTIALS_FOUND = 21,
 }
@@ -368,6 +370,9 @@ export interface NativeBiometricPlugin {
    *
    * On iOS, the system automatically shows the biometric prompt when accessing the protected Keychain item.
    * On Android, BiometricPrompt is shown with a CryptoObject bound to the credential decryption key.
+   * Credentials stored with a legacy Android authentication window use a strong biometric prompt
+   * followed immediately by decryption with the original key.
+   * Native rejections with a BiometricAuthError use a string in `code`, such as `"21"` for missing credentials.
    *
    * @param {GetSecureCredentialsOptions} options
    * @returns {Promise<Credentials>}
