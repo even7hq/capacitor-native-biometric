@@ -63,10 +63,10 @@ export interface Credentials {
 
 export interface IsAvailableOptions {
   /**
-   * Only for iOS.
-   * Specifies if should fallback to passcode authentication if biometric authentication is not available.
-   * On Android, this parameter is ignored due to BiometricPrompt API constraints:
-   * DEVICE_CREDENTIAL authenticator and negative button (cancel) are mutually exclusive.
+   * Counts the device passcode toward availability when a secure lock screen is configured.
+   * Before Android 11, this check can count the passcode even though the verification prompt cannot offer it.
+   * To offer the passcode in the Android verification dialog, set the `useFallback` option
+   * of BiometricOptions when calling `verifyIdentity()` on Android 11 or newer.
    */
   useFallback: boolean;
 }
@@ -114,10 +114,10 @@ export interface BiometricOptions {
   description?: string;
   negativeButtonText?: string;
   /**
-   * Only for iOS.
-   * Specifies if should fallback to passcode authentication if biometric authentication fails.
-   * On Android, this parameter is ignored due to BiometricPrompt API constraints:
-   * DEVICE_CREDENTIAL authenticator and negative button (cancel) are mutually exclusive.
+   * Requests the device passcode as an alternative in the verification dialog.
+   * On Android 11 or newer, the dialog can offer a configured PIN, pattern or password
+   * alongside strong biometrics. This option defaults to false on Android. On older
+   * Android versions, the default dialog keeps strong biometrics and the cancel button.
    */
   useFallback?: boolean;
   /**
@@ -135,7 +135,8 @@ export interface BiometricOptions {
   /**
    * Only for Android.
    * Specify which biometry types are allowed for authentication.
-   * If not specified, all available types will be allowed.
+   * If not specified, the Android dialog defaults to strong biometrics. The
+   * `useFallback` option can also add the device credential on Android 11 or newer.
    * @example [BiometryType.FINGERPRINT, BiometryType.FACE_AUTHENTICATION]
    */
   allowedBiometryTypes?: BiometryType[];
@@ -217,14 +218,15 @@ export interface IsCredentialsSavedResult {
 
 /**
  * Biometric authentication error codes.
- * These error codes are used in both isAvailable() and verifyIdentity() methods.
+ * The `isAvailable()` result reports these codes as numbers in `errorCode`.
+ * Native authentication errors expose the numeric value as a string in the rejection's `code`.
  *
  * Keep this in sync with BiometricAuthError in README.md
  * Update whenever `convertToPluginErrorCode` functions are modified
  */
 export enum BiometricAuthError {
   /**
-   * Unknown error occurred
+   * Unknown error occurred. On Android, this code is also returned when another biometric prompt is already open.
    */
   UNKNOWN_ERROR = 0,
   /**
@@ -287,6 +289,11 @@ export enum BiometricAuthError {
    * Platform: Android, iOS
    */
   USER_FALLBACK = 17,
+  /**
+   * No usable biometric-protected credentials exist for the requested server.
+   * `getSecureCredentials()` reports this error as `code: "21"` when the user needs to enroll again.
+   */
+  NO_PROTECTED_CREDENTIALS_FOUND = 21,
 }
 
 /**
@@ -363,6 +370,9 @@ export interface NativeBiometricPlugin {
    *
    * On iOS, the system automatically shows the biometric prompt when accessing the protected Keychain item.
    * On Android, BiometricPrompt is shown with a CryptoObject bound to the credential decryption key.
+   * Credentials stored with a legacy Android authentication window use a strong biometric prompt
+   * followed immediately by decryption with the original key.
+   * Native rejections with a BiometricAuthError use a string in `code`, such as `"21"` for missing credentials.
    *
    * @param {GetSecureCredentialsOptions} options
    * @returns {Promise<Credentials>}
