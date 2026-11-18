@@ -370,6 +370,13 @@ public class AuthActivity extends AppCompatActivity {
                 promptState.writeToken = ProtectedCredentialStore.beginWrite(credentialServer);
                 KeyStore keys = KeyStore.getInstance("AndroidKeyStore");
                 keys.load(null);
+                ProtectedCredentialStore.reconcilePendingAlias(
+                    keys,
+                    prefs,
+                    credentialServer,
+                    ProtectedCredentialStore.readPendingAlias(prefs, credentialServer),
+                    false
+                );
                 promptState.credentialAlias = ProtectedCredentialStore.readAlias(prefs, credentialServer);
                 promptState.encryptedCredentials = prefs.getString(ProtectedCredentialStore.dataPreference(credentialServer), null);
                 promptState.previousAccessControl = prefs.getInt(
@@ -390,7 +397,9 @@ public class AuthActivity extends AppCompatActivity {
                         // A replacement can be staged without removing the existing record.
                     }
                 }
-                promptState.replacementAlias = ProtectedCredentialStore.newAlias(keys, prefs);
+                String replacementAlias = ProtectedCredentialStore.newAlias(keys, prefs);
+                ProtectedCredentialStore.persistPendingAlias(prefs, credentialServer, replacementAlias);
+                promptState.replacementAlias = replacementAlias;
                 promptState.credentialCipher = initCredentialCipher(
                     Cipher.ENCRYPT_MODE,
                     generateCredentialKey(promptState.replacementAlias, promptState.accessControl == BIOMETRY_CURRENT_SET)
@@ -537,21 +546,26 @@ public class AuthActivity extends AppCompatActivity {
             ProtectedCredentialStore.finishWrite(credentialServer, promptState.writeToken);
             promptState.writeToken = null;
             if (promptState.replacementAlias != null) {
-                deleteUnusedKey(promptState.replacementAlias);
+                reconcilePendingCredentialKey(promptState.replacementAlias, false);
                 promptState.replacementAlias = null;
             }
         }
     }
 
-    private void deleteUnusedKey(String alias) {
-        synchronized (ProtectedCredentialStore.LOCK) {
-            try {
-                KeyStore keys = KeyStore.getInstance("AndroidKeyStore");
-                keys.load(null);
-                ProtectedCredentialStore.deleteProtectedKey(keys, getSharedPreferences(SHARED_PREFS_NAME, MODE_PRIVATE), alias);
-            } catch (GeneralSecurityException | IOException | ProviderException e) {
-                Log.w("NativeBiometric", "Could not remove an unused biometric key", e);
-            }
+    /** Reconciles the pending key while the caller holds the credential lock. */
+    private void reconcilePendingCredentialKey(String alias, boolean recordPersisted) {
+        try {
+            KeyStore keys = KeyStore.getInstance("AndroidKeyStore");
+            keys.load(null);
+            ProtectedCredentialStore.reconcilePendingAlias(
+                keys,
+                getSharedPreferences(SHARED_PREFS_NAME, MODE_PRIVATE),
+                credentialServer,
+                alias,
+                recordPersisted
+            );
+        } catch (GeneralSecurityException | IOException | ProviderException e) {
+            Log.w("NativeBiometric", "Could not reconcile a pending biometric key", e);
         }
     }
 
@@ -588,18 +602,20 @@ public class AuthActivity extends AppCompatActivity {
                     editor.apply();
                 } else {
                     String alias = promptState.replacementAlias;
-                    promptState.replacementAlias = null;
-                    // Keep both keys if the write fails. The record may already be visible in memory.
+                    String pendingPreference = ProtectedCredentialStore.pendingAliasPreference(server);
+                    // The same commit publishes the new record and marks the previous key for cleanup.
                     if (
                         !editor
                             .putString(ProtectedCredentialStore.aliasPreference(server), alias)
                             .putInt(ProtectedCredentialStore.policyPreference(server), promptState.accessControl)
+                            .putString(pendingPreference, promptState.credentialAlias)
                             .commit()
                     ) {
                         SharedPreferences.Editor rollback = prefs
                             .edit()
                             .putString(ProtectedCredentialStore.dataPreference(server), promptState.encryptedCredentials)
-                            .putString(ProtectedCredentialStore.aliasPreference(server), promptState.credentialAlias);
+                            .putString(ProtectedCredentialStore.aliasPreference(server), promptState.credentialAlias)
+                            .putString(pendingPreference, alias);
                         if (promptState.previousAccessControl == UNKNOWN_ACCESS_CONTROL) {
                             rollback.remove(ProtectedCredentialStore.policyPreference(server));
                         } else {
@@ -609,7 +625,8 @@ public class AuthActivity extends AppCompatActivity {
                         finishActivity("error", 0, "Failed to persist protected credentials");
                         return;
                     }
-                    deleteUnusedKey(promptState.credentialAlias);
+                    promptState.replacementAlias = null;
+                    reconcilePendingCredentialKey(promptState.credentialAlias, true);
                 }
             }
             finishActivity();

@@ -303,11 +303,7 @@ public class NativeBiometric extends Plugin {
             try {
                 SharedPreferences prefs = getContext().getSharedPreferences(NATIVE_BIOMETRIC_SHARED_PREFERENCES, Context.MODE_PRIVATE);
                 synchronized (ProtectedCredentialStore.LOCK) {
-                    if (
-                        ProtectedCredentialStore.isReplacementAlias(KEY_ALIAS) &&
-                        !ProtectedCredentialStore.hasRawCredentials(prefs, KEY_ALIAS) &&
-                        getKeyStore().containsAlias(KEY_ALIAS)
-                    ) {
+                    if (ProtectedCredentialStore.isProtectedReplacementAlias(prefs, KEY_ALIAS)) {
                         throw new GeneralSecurityException("Credential alias already in use");
                     }
                     prefs
@@ -551,7 +547,15 @@ public class NativeBiometric extends Plugin {
         }
     }
 
-    static void deleteCredentialKeys(KeyStore keyStore, SharedPreferences prefs, String server) throws KeyStoreException {
+    /** The caller holds the credential lock during key and preference deletion. */
+    static void deleteCredentialKeys(KeyStore keyStore, SharedPreferences prefs, String server) throws KeyStoreException, IOException {
+        ProtectedCredentialStore.reconcilePendingAlias(
+            keyStore,
+            prefs,
+            server,
+            ProtectedCredentialStore.readPendingAlias(prefs, server),
+            false
+        );
         String protectedPrefix = ProtectedCredentialStore.LEGACY_KEY_PREFIX;
         boolean isOtherLegacyKey = false;
         if (server.startsWith(protectedPrefix)) {
@@ -560,8 +564,7 @@ public class NativeBiometric extends Plugin {
                 prefs.contains(ProtectedCredentialStore.dataPreference(otherServer)) &&
                 server.equals(ProtectedCredentialStore.readAlias(prefs, otherServer));
         }
-        boolean isReplacementKey =
-            ProtectedCredentialStore.isReplacementAlias(server) && !ProtectedCredentialStore.hasRawCredentials(prefs, server);
+        boolean isReplacementKey = ProtectedCredentialStore.isProtectedReplacementAlias(prefs, server);
         if (!isOtherLegacyKey && !isReplacementKey) {
             keyStore.deleteEntry(server);
         }

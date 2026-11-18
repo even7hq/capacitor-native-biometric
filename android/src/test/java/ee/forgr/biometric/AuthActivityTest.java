@@ -4,11 +4,13 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 import android.content.SharedPreferences;
 import android.os.Build;
 import androidx.biometric.BiometricManager;
+import java.io.IOException;
 import java.lang.reflect.Proxy;
 import java.security.KeyStore;
 import java.util.HashMap;
@@ -125,6 +127,60 @@ public class AuthActivityTest {
     }
 
     @Test
+    public void deletingCredentialsRemovesAnAbandonedRawKeyWithTheProtectedPrefix() throws Exception {
+        String alias = "NativeBiometricProtected_abandoned";
+        KeyStore keyStore = keyStoreWithKeys(alias);
+        SharedPreferences prefs = preferencesWith(Map.of());
+
+        assertFalse(ProtectedCredentialStore.isProtectedReplacementAlias(prefs, alias));
+        NativeBiometric.deleteCredentialKeys(keyStore, prefs, alias);
+        assertFalse(keyStore.containsAlias(alias));
+    }
+
+    @Test
+    public void recoveryRemovesAnAbandonedStagedKeyAndKeepsTheCurrentRecord() throws Exception {
+        String server = "owner";
+        String active = "NativeBiometricProtected_active";
+        String staged = "NativeBiometricProtected_staged";
+        KeyStore keyStore = keyStoreWithKeys(active, staged);
+        SharedPreferences prefs = preferencesWith(Map.of(ProtectedCredentialStore.aliasPreference(server), active, "secure_owner", "data"));
+
+        ProtectedCredentialStore.persistPendingAlias(prefs, server, staged);
+        assertTrue(ProtectedCredentialStore.isProtectedReplacementAlias(prefs, staged));
+        NativeBiometric.deleteCredentialKeys(keyStore, prefs, staged);
+        assertTrue(keyStore.containsAlias(staged));
+
+        ProtectedCredentialStore.reconcilePendingAlias(keyStore, prefs, server, staged, false);
+        assertTrue(keyStore.containsAlias(active));
+        assertFalse(keyStore.containsAlias(staged));
+        assertNull(ProtectedCredentialStore.readPendingAlias(prefs, server));
+        assertTrue(ProtectedCredentialStore.matches(prefs, server, active, "data"));
+    }
+
+    @Test
+    public void recoveryKeepsBothKeysWhenTheCurrentRecordCannotBePersisted() throws Exception {
+        String server = "owner";
+        String active = "NativeBiometricProtected_active";
+        String staged = "NativeBiometricProtected_staged";
+        KeyStore keyStore = keyStoreWithKeys(active, staged);
+        SharedPreferences prefs = preferencesWith(
+            Map.of(
+                ProtectedCredentialStore.aliasPreference(server),
+                active,
+                ProtectedCredentialStore.pendingAliasPreference(server),
+                staged
+            ),
+            false
+        );
+
+        assertThrows(IOException.class, () -> ProtectedCredentialStore.reconcilePendingAlias(keyStore, prefs, server, staged, false));
+        assertEquals(staged, ProtectedCredentialStore.readPendingAlias(prefs, server));
+        assertTrue(ProtectedCredentialStore.isProtectedReplacementAlias(prefs, staged));
+        assertTrue(keyStore.containsAlias(active));
+        assertTrue(keyStore.containsAlias(staged));
+    }
+
+    @Test
     public void deletingRawCredentialsRemovesTheirKeyAfterAnotherServerHasMigrated() throws Exception {
         String otherAlias = "NativeBiometricProtected_other";
         String rawServer = ProtectedCredentialStore.LEGACY_KEY_PREFIX + "owner";
@@ -177,6 +233,10 @@ public class AuthActivityTest {
     }
 
     private static SharedPreferences preferencesWith(Map<String, String> initialValues) {
+        return preferencesWith(initialValues, true);
+    }
+
+    private static SharedPreferences preferencesWith(Map<String, String> initialValues, boolean persists) {
         Map<String, String> values = new HashMap<>(initialValues);
         return (SharedPreferences) Proxy.newProxyInstance(
             SharedPreferences.class.getClassLoader(),
@@ -187,8 +247,10 @@ public class AuthActivityTest {
                         return values.containsKey(arguments[0]);
                     case "getString":
                         return values.getOrDefault(arguments[0], (String) arguments[1]);
+                    case "getAll":
+                        return new HashMap<>(values);
                     case "edit":
-                        return edit(values);
+                        return edit(values, persists);
                     default:
                         throw new UnsupportedOperationException(method.getName());
                 }
@@ -196,7 +258,7 @@ public class AuthActivityTest {
         );
     }
 
-    private static SharedPreferences.Editor edit(Map<String, String> values) {
+    private static SharedPreferences.Editor edit(Map<String, String> values, boolean persists) {
         return (SharedPreferences.Editor) Proxy.newProxyInstance(
             SharedPreferences.Editor.class.getClassLoader(),
             new Class<?>[] { SharedPreferences.Editor.class },
@@ -210,6 +272,8 @@ public class AuthActivityTest {
                         return proxy;
                     case "apply":
                         return null;
+                    case "commit":
+                        return persists;
                     default:
                         throw new UnsupportedOperationException(method.getName());
                 }
